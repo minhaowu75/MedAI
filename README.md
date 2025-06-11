@@ -1,1 +1,1 @@
-# Mouth-Recognition
+# MedAI
