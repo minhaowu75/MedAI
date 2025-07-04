@@ -1,20 +1,35 @@
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+import logging
+import os
 import requests
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+OLLAM_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+MODEL_NAME = os.getenv("MODEL_NAME", "llama3")
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "500"))
+
 class Message(BaseModel):
-    role: str
-    content: str
+    role: str = Field(..., regex="^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=2000)
 
 class ChatRequest(BaseModel):
-    messages: list[Message]
+    messages: list[Message] = Field(..., mini_items=1, max_items=20)
+
+class ChatResponse(BaseModel):
+    response: str
+    timestamp: datetime
+    model_used: str
 
 def build_prompt(messages: list[Message]):
     system_instruction = (
