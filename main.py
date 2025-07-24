@@ -1,11 +1,13 @@
 from datetime import datetime
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
 from pydantic import BaseModel, Field
 
+import aiohttp
+import asyncio
 import logging
 import os
 import requests
@@ -15,12 +17,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-OLLAM_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "llama3")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "500"))
 
 class Message(BaseModel):
-    role: str = Field(..., regex="^(user|assistant)$")
+    role: str = Field(..., pattern="^(user|assistant)$")
     content: str = Field(..., min_length=1, max_length=2000)
 
 class ChatRequest(BaseModel):
@@ -41,12 +43,54 @@ def build_prompt(messages: list[Message]):
     )
 
     chat = [f"System: {system_instruction}"]
-    for message in messages:
-        pref = "User" if message.role == "user" else "Assistant"
-        chat.append(f"{pref}: {message.content}")
+    
+    for message in messages[-10:]:
+        role = "Human" if message.role == "user" else "Assistant"
+        content = message.content.replace("System:", "").replace("Assistant:", "").replace("Human:", "")
+        chat.append(f"{role}: {content}")
     
     return "\n".join(chat) + "\nAssistant:"
 
+async def call_ollama_api(prompt: str) -> str:
+    try:
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.3,
+                    "top_p": 0.9,
+                    "num_predict": MAX_TOKENS
+                }
+            }
+            
+            async with session.post(
+                f"{OLLAMA_URL}/api/generate",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code = 500,
+                        detail=f"Model API returned status {response.status}"
+                    )
+                
+                result = await response.json()
+                return result.get("response", "No response from model")
+    except aiohttp.ClientError as e:
+        logger.error(f"API call failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Medical AI service temporarily unavailable"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error"
+        )
+    
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -54,19 +98,55 @@ templates = Jinja2Templates(directory="templates")
 async def root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.post("/diagnose")
-def diagnose(req: ChatRequest):
-    prompt = build_prompt(req.messages)
+@app.get("/health")
+async def health_check():
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{OLLAMA_URL}/api/tags") as response:
+                if response.status == 200:
+                    return {"status": "healthy", "model_service": "available"}
+                else:
+                    return {"status": "degraded", "model_service": "unavailable"}
+    except:
+        return {"status": "unhealthy", "model_service": "unavailable"}
+    
+@app.post("/diagnose", response_model=ChatResponse)
+async def diagnose(req: ChatRequest):
+    try:
+        logger.info(f"Processing medical query with {len(req.messages)} messages")
 
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": "llama3",
-            "prompt": prompt,
-            "stream": False,
-            "temperature": 0.7
-        }
+        prompt = build_prompt(req.messages)
+
+        response_text = await call_ollama_api(prompt)
+
+        disclaimer = "\n\nIMPORTANT: This tool is not meant to diagnose or treat. It is only meant to assist." \
+        " Always make sure to consult a qualified healthcare professional for any medical advice, diagnosis, or treatment."
+
+        response_text += disclaimer
+
+        return ChatResponse(
+            response=response_text,
+            timestamp=datetime.now(),
+            model_used=MODEL_NAME
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in diagnose endpoint: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to process medical query"
+        )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}")
+    return HTTPException(
+        status_code=500,
+        detail="An unexpected error occured"
     )
 
-    result = response.json()
-    return {"response": result.get("response", "Model did not respond.")}
+if __name__ =="__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
