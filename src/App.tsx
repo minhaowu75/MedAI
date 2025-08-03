@@ -1,5 +1,5 @@
 import React from 'react';
-import Header from './components/WebpageHeader'
+import Header from './components/WebpageHeader.tsx'
 
 function App() {
     return(
