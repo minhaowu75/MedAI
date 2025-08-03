@@ -26,7 +26,7 @@ class Message(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
 
 class ChatRequest(BaseModel):
-    messages: list[Message] = Field(..., mini_items=1, max_items=20)
+    messages: list[Message] = Field(..., min_items=1, max_items=20)
 
 class ChatResponse(BaseModel):
     response: str
