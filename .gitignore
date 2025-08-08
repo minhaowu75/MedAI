@@ -1,5 +1,4 @@
 .vscode/settings.json
 __pycache__/main.cpython-313.pyc
-package-lock.json
-package.json
 node_modules
+static
